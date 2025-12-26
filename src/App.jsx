@@ -1,6 +1,7 @@
 import React from "react";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import SiteNav from "./components/SiteNav";
+import SEO from "./components/SEO";
 
 import Home from "./pages/Home";
 import VotePage from "./pages/VoteDemo";
@@ -58,7 +59,13 @@ function VoteRedirect() {
     const code = createSession();
     navigate(`/vote/${code}`, { replace: true });
   }, [navigate]);
-  return null;
+  return (
+    <SEO
+      title="Audience Voting Demo | PickMySet"
+      description="Try the PickMySet audience voting demo — no app, no login, just vote."
+      canonicalPath="/vote/demo"
+    />
+  );
 }
 
 function PerformerRedirect() {
@@ -67,5 +74,11 @@ function PerformerRedirect() {
     const code = createSession();
     navigate(`/performer/${code}`, { replace: true });
   }, [navigate]);
-  return null;
+  return (
+    <SEO
+      title="Performer Screen Demo | PickMySet"
+      description="Explore the PickMySet performer demo with live voting, setlists, lyrics, and backing tracks."
+      canonicalPath="/performer/demo"
+    />
+  );
 }

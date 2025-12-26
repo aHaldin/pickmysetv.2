@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback, useLayoutEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
+import SEO from "../components/SEO";
 import { getSession, vote, reset, subscribeToSession } from "../hooks/useSessionStore";
 
 export default function PerformerDemo() {
@@ -80,6 +81,10 @@ export default function PerformerDemo() {
 
   return (
     <>
+      <SEO
+        title="Performer Screen | PickMySet"
+        description="Run your set with live audience votes, lyrics, and backing tracks on PickMySet."
+      />
       <main className="py-10 space-y-8">
         <div className="space-y-2">
           <div className="flex items-center gap-3">

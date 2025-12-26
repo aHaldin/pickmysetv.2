@@ -1,9 +1,15 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import SEO from "../components/SEO";
 
 export default function Signup() {
   return (
     <div className="min-h-screen bg-midnight text-white flex items-center justify-center px-4">
+      <SEO
+        title="Create an Account | PickMySet"
+        description="New performer accounts are launching soon. Join the PickMySet waitlist to be first in line."
+        robots="noindex, nofollow"
+      />
       <div className="glass-card rounded-3xl p-8 soft-border w-full max-w-md space-y-6 text-center">
         <div className="space-y-2 text-center">
           <p className="text-xs uppercase tracking-[0.3em] text-white/50">PickMySet</p>

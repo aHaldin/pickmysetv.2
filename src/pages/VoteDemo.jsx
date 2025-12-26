@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import LiveVoteDemo from "../components/LiveVoteDemo";
+import SEO from "../components/SEO";
 import { getSession, vote, reset, subscribeToSession } from "../hooks/useSessionStore";
 
 export default function VoteDemo() {
@@ -33,6 +34,10 @@ export default function VoteDemo() {
 
   return (
     <main className="py-10 space-y-8">
+      <SEO
+        title="Audience Voting | PickMySet"
+        description="Vote on the next song in real time with PickMySet — no app, no login, just vote."
+      />
       <div className="space-y-2">
         <p className="text-xs uppercase tracking-[0.3em] text-white/50">Audience Voting Demo</p>
         <h1 className="text-3xl sm:text-4xl font-extrabold">Audience Voting Demo</h1>

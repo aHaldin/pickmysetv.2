@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import SEO from '../components/SEO';
 import LiveVoteDemo from '../components/LiveVoteDemo';
 import WaitlistEmbed from '../components/WaitlistEmbed';
 import useHashScroll from '../hooks/useHashScroll';
@@ -90,6 +91,7 @@ export default function Home() {
   useHashScroll();
   return (
     <>
+      <SEO />
       <Hero />
       <HowItWorks />
       <Benefits />

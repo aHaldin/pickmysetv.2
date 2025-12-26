@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import SEO from "../components/SEO";
 import { createSession, setSessionSongs } from "../hooks/useSessionStore";
 import { useSetlistsStore } from "../hooks/useSetlistsStore";
 
@@ -14,6 +15,8 @@ const emptySong = {
 };
 
 export default function Dashboard() {
+  const seoDescription =
+    "Manage your PickMySet setlists, lyrics, and backing tracks in the performer dashboard.";
   const navigate = useNavigate();
   const {
     setlists,
@@ -449,6 +452,11 @@ export default function Dashboard() {
 
   return (
     <>
+      <SEO
+        title="Performer Dashboard | PickMySet"
+        description={seoDescription}
+        robots="noindex, nofollow"
+      />
       <main className="py-10 space-y-8">
       <div className="space-y-2">
         <p className="text-xs uppercase tracking-[0.3em] text-white/50">Performer Dashboard</p>

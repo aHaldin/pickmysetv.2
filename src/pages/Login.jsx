@@ -1,9 +1,15 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import SEO from "../components/SEO";
 
 export default function Login() {
   return (
     <div className="min-h-screen bg-midnight text-white flex items-center justify-center px-4">
+      <SEO
+        title="Performer Access | PickMySet"
+        description="Performer accounts are opening soon. Join the PickMySet waitlist for early access."
+        robots="noindex, nofollow"
+      />
       <div className="glass-card rounded-3xl p-8 soft-border w-full max-w-md space-y-6 text-center">
         <div className="space-y-2 text-center">
           <p className="text-xs uppercase tracking-[0.3em] text-white/50">PickMySet</p>
