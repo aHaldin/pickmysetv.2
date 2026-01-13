@@ -24,6 +24,15 @@ export async function signInWithEmail(email, password) {
   return data.user;
 }
 
+export async function sendPasswordReset(email) {
+  const client = getSupabaseClient();
+  if (!client) throw new Error("Supabase env missing. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY then restart dev server.");
+  const { error } = await client.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin + "/login",
+  });
+  if (error) throw error;
+}
+
 export async function signOut() {
   try {
     const client = getSupabaseClient();

@@ -1,710 +1,1104 @@
-import React, { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import SEO from "../components/SEO";
-import { createSession, setSessionSongs } from "../hooks/useSessionStore";
-import { useSetlistsStore } from "../hooks/useSetlistsStore";
+import { getUser, onAuthStateChange } from "../lib/auth";
+import EditSetlistModal from "../components/EditSetlistModal";
+import SongLibraryModal from "../components/SongLibraryModal";
+import { getSupabaseClient } from "../lib/supabaseClient";
+import {
+  addSetlistItem,
+  createGig,
+  createSetlist,
+  createSong,
+  createShareToken,
+  deleteSetlistItemsBySong,
+  deleteSong,
+  deleteSetlist,
+  deleteGig,
+  fetchGigSubmissions,
+  fetchGigs,
+  fetchSetlistItems,
+  fetchSetlists,
+  fetchSubmissionItems,
+  fetchSongs,
+  fetchSongsPage,
+  updateSong,
+  upsertSetlistItems,
+} from "../lib/data";
 
-const emptySong = {
-  id: null,
-  title: "",
-  artist: "",
-  backingTrackUrl: "",
-  lyrics: "",
-  pdfName: "",
-  pdfUrl: "",
-};
+const STORAGE_KEY = "pickmyset:selectedSetlist";
+const LEGACY_STORAGE_KEY = "pickmyset:setlists:v1";
+const PAGE_SIZE = 8;
 
 export default function Dashboard() {
   const seoDescription =
-    "Manage your PickMySet setlists, lyrics, and backing tracks in the performer dashboard.";
-  const navigate = useNavigate();
-  const {
-    setlists,
-    selectedId,
-    currentSetlist,
-    createSetlist,
-    deleteSetlist,
-    selectSetlist,
-    addOrUpdateSong,
-    removeSong,
-    moveSong,
-  } = useSetlistsStore();
+    "Manage your PickMySet song library, setlists, and client requests in the performer dashboard.";
 
-  const [form, setForm] = useState(emptySong);
-  const [editingId, setEditingId] = useState(null);
-  const [sessionCode, setSessionCode] = useState("");
-  const [viewLyricsSong, setViewLyricsSong] = useState(null);
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkText, setBulkText] = useState("");
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [songs, setSongs] = useState([]);
+  const [songsLoading, setSongsLoading] = useState(false);
+  const [songsHasMore, setSongsHasMore] = useState(true);
+  const [songSearch, setSongSearch] = useState("");
+  const [setlists, setSetlists] = useState([]);
+  const [selectedSetlistId, setSelectedSetlistId] = useState(() =>
+    localStorage.getItem(STORAGE_KEY)
+  );
+  const [setlistItems, setSetlistItems] = useState([]);
+  const [gigs, setGigs] = useState([]);
+  const [error, setError] = useState("");
   const [toast, setToast] = useState("");
-  const [importOpen, setImportOpen] = useState(false);
-  const [importRows, setImportRows] = useState([]);
-  const [importErrors, setImportErrors] = useState([]);
-  const [importFileName, setImportFileName] = useState("");
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState("");
-  const titleRef = React.useRef(null);
+  const [songModalOpen, setSongModalOpen] = useState(false);
+  const [songModalTab, setSongModalTab] = useState("add");
+  const [editSetlistOpen, setEditSetlistOpen] = useState(false);
+  const [editSetlistId, setEditSetlistId] = useState(null);
+  const [creatingFromSubmissionId, setCreatingFromSubmissionId] = useState(null);
+  const [importingLegacy, setImportingLegacy] = useState(false);
+  const [hasLegacySetlists, setHasLegacySetlists] = useState(false);
+  const [submissionsModalOpen, setSubmissionsModalOpen] = useState(false);
+  const [submissionsGig, setSubmissionsGig] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
+  const [submissionsLoading, setSubmissionsLoading] = useState(false);
+  const [deleteGigTarget, setDeleteGigTarget] = useState(null);
+  const [editSong, setEditSong] = useState(null);
+  const [editSongForm, setEditSongForm] = useState({
+    title: "",
+    original_artist: "",
+    backing_track_url: "",
+    lyrics: "",
+  });
+  const [editSongSaving, setEditSongSaving] = useState(false);
+  const [deleteSongTarget, setDeleteSongTarget] = useState(null);
+  const [uploadingTrack, setUploadingTrack] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
 
-  const hasSetlist = Boolean(currentSetlist);
-  const audienceLink = sessionCode ? `${window.location.origin}/vote/${sessionCode}` : "";
-  const performerLink = sessionCode ? `${window.location.origin}/performer/${sessionCode}` : "";
+  const [gigModalOpen, setGigModalOpen] = useState(false);
+  const [gigForm, setGigForm] = useState({
+    title: "",
+    clientName: "",
+    eventDate: "",
+    baseSetlistId: "",
+  });
+  const [lastLink, setLastLink] = useState("");
 
-  const songs = currentSetlist?.songs || [];
+  useEffect(() => {
+    let unsubscribe;
+    getUser()
+      .then((u) => setUser(u))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
+    unsubscribe = onAuthStateChange((_evt, u) => setUser(u));
+    return () => unsubscribe && unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      setHasLegacySetlists(Array.isArray(parsed?.setlists) && parsed.setlists.length > 0);
+    } catch (err) {
+      setHasLegacySetlists(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const load = async () => {
+      try {
+        const [setlistsData, gigsData] = await Promise.all([
+          fetchSetlists(),
+          fetchGigs(),
+        ]);
+        setSetlists(setlistsData);
+        setGigs(gigsData);
+        setError("");
+        const hasStored = selectedSetlistId && setlistsData.some((s) => s.id === selectedSetlistId);
+        if ((!selectedSetlistId || !hasStored) && setlistsData.length) {
+          setSelectedSetlistId(setlistsData[0].id);
+        }
+      } catch (err) {
+        setError(err?.message || "Unable to load your dashboard data.");
+      }
+    };
+    load();
+  }, [user, selectedSetlistId]);
+
+  const loadSetlistItems = useCallback(async () => {
+    if (!selectedSetlistId) return;
+    try {
+      const items = await fetchSetlistItems(selectedSetlistId);
+      setSetlistItems(items);
+    } catch (err) {
+      setError(err?.message || "Unable to load setlist items.");
+    }
+  }, [selectedSetlistId]);
+
+  useEffect(() => {
+    if (!selectedSetlistId) return;
+    localStorage.setItem(STORAGE_KEY, selectedSetlistId);
+    loadSetlistItems();
+  }, [selectedSetlistId, loadSetlistItems]);
+
+  const loadSongs = useCallback(
+    async ({ reset = true } = {}) => {
+      if (!user) return;
+      setSongsLoading(true);
+      try {
+        const from = reset ? 0 : songs.length;
+        const to = from + PAGE_SIZE - 1;
+        const data = await fetchSongsPage({ search: songSearch, from, to });
+        setSongs((prev) => (reset ? data : [...prev, ...data]));
+        setSongsHasMore(data.length === PAGE_SIZE);
+        setError("");
+      } catch (err) {
+        setError(err?.message || "Unable to load songs.");
+      } finally {
+        setSongsLoading(false);
+      }
+    },
+    [songSearch, songs.length, user]
+  );
+
+  useEffect(() => {
+    loadSongs({ reset: true });
+  }, [loadSongs]);
+
+  const currentSetlist = useMemo(
+    () => setlists.find((list) => list.id === selectedSetlistId) || null,
+    [setlists, selectedSetlistId]
+  );
+  const editSetlist = useMemo(
+    () => setlists.find((list) => list.id === editSetlistId) || currentSetlist,
+    [setlists, editSetlistId, currentSetlist]
+  );
+
+  const setlistSongs = useMemo(
+    () =>
+      setlistItems.map((item) => ({
+        ...item.song,
+        itemId: item.id,
+        position: item.position,
+      })),
+    [setlistItems]
+  );
+
   const stats = useMemo(() => {
-    const total = songs.length;
-    const withLyrics = songs.filter((s) => s.lyrics && s.lyrics.trim()).length;
-    const withTracks = songs.filter((s) => s.backingTrackUrl && s.backingTrackUrl.trim()).length;
-    const withPdfs = songs.filter((s) => s.pdfUrl && s.pdfUrl.trim()).length;
-    return { total, withLyrics, withTracks, withPdfs };
-  }, [songs]);
-  const templateCsv = "setlist_name,song_title,artist,backing_track_url,lyrics\nMy Set,Song A,Artist A,http://...,Verse 1\\nVerse 2\n";
+    const total = setlistSongs.length;
+    const withLyrics = setlistSongs.filter((s) => s.lyrics?.trim()).length;
+    const withTracks = setlistSongs.filter((s) => s.backing_track_url?.trim()).length;
+    return { total, withLyrics, withTracks };
+  }, [setlistSongs]);
 
-  const handleCreateSetlist = () => {
+  const checklist = {
+    setlistSelected: Boolean(currentSetlist),
+    songAdded: setlistSongs.length > 0,
+    clientLinkCreated: gigs.length > 0,
+    clientRequestReceived: gigs.some((gig) => (gig.client_submissions || []).length > 0),
+  };
+
+  const handleCreateSetlist = async () => {
     const name = prompt("Setlist name");
     if (!name) return;
-    createSetlist(name);
+    try {
+      const created = await createSetlist({ name: name.trim(), user_id: user.id });
+      setSetlists((prev) => [...prev, created]);
+      setSelectedSetlistId(created.id);
+      showToast("Setlist created");
+    } catch (err) {
+      setError(err?.message || "Unable to create setlist.");
+    }
   };
 
-  const handleDeleteSetlist = (id) => {
+  const handleDeleteSetlist = async (id) => {
     if (!window.confirm("Delete this setlist?")) return;
-    deleteSetlist(id);
+    try {
+      await deleteSetlist(id);
+      setSetlists((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        if (selectedSetlistId === id) {
+          setSelectedSetlistId(next[0]?.id || "");
+        }
+        return next;
+      });
+      setSetlistItems([]);
+    } catch (err) {
+      setError(err?.message || "Unable to delete setlist.");
+    }
   };
 
-  const handleSubmitSong = (e) => {
-    e.preventDefault();
-    if (!currentSetlist) return;
-    if (!form.title.trim()) return;
-    const songId = editingId || `song-${Date.now()}`;
-    addOrUpdateSong(currentSetlist.id, {
-      ...form,
-      id: songId,
+
+
+  const handleCreateGig = async (event) => {
+    event.preventDefault();
+    if (!gigForm.title.trim()) return;
+    try {
+      const shareToken = createShareToken();
+      const created = await createGig({
+        user_id: user.id,
+        title: gigForm.title.trim(),
+        client_name: gigForm.clientName?.trim() || null,
+        event_date: gigForm.eventDate || null,
+        share_token: shareToken,
+        base_setlist_id: gigForm.baseSetlistId || null,
+      });
+      setGigs((prev) => [created, ...prev]);
+      const link = `${window.location.origin}/c/${shareToken}`;
+      setLastLink(link);
+      setGigModalOpen(false);
+      setGigForm({ title: "", clientName: "", eventDate: "", baseSetlistId: "" });
+    } catch (err) {
+      setError(err?.message || "Unable to create client link.");
+    }
+  };
+
+  const handleOpenSubmissions = async (gig) => {
+    setSubmissionsGig(gig);
+    setSubmissionsModalOpen(true);
+    setSubmissionsLoading(true);
+    try {
+      const data = await fetchGigSubmissions(gig.id);
+      setSubmissions(data);
+    } catch (err) {
+      setError(err?.message || "Unable to load submissions.");
+    } finally {
+      setSubmissionsLoading(false);
+    }
+  };
+
+  const handleDeleteGig = async () => {
+    if (!deleteGigTarget) return;
+    try {
+      await deleteGig(deleteGigTarget.id);
+      setGigs((prev) => prev.filter((gig) => gig.id !== deleteGigTarget.id));
+      showToast("Client link deleted");
+    } catch (err) {
+      setError(err?.message || "Unable to delete client link.");
+    } finally {
+      setDeleteGigTarget(null);
+    }
+  };
+
+  const handleEditSong = (song) => {
+    setEditSong(song);
+    setEditSongForm({
+      title: song.title || "",
+      original_artist: song.original_artist || "",
+      backing_track_url: song.backing_track_url || "",
+      lyrics: song.lyrics || "",
     });
-    setForm(emptySong);
-    setEditingId(null);
-    setTimeout(() => titleRef.current?.focus(), 0);
+    setUploadMessage("");
   };
 
-  const handleEdit = (song) => {
-    setForm(song);
-    setEditingId(song.id);
+  const handleSaveSong = async (event) => {
+    event.preventDefault();
+    if (!editSong) return;
+    if (!editSongForm.title.trim()) return;
+    setEditSongSaving(true);
+    try {
+      await updateSong(editSong.id, {
+        title: editSongForm.title.trim(),
+        original_artist: editSongForm.original_artist.trim() || null,
+        backing_track_url: editSongForm.backing_track_url.trim() || null,
+        lyrics: editSongForm.lyrics.trim() || null,
+      });
+      await loadSongs({ reset: true });
+      await loadSetlistItems();
+      setEditSong(null);
+      showToast("Song updated");
+    } catch (err) {
+      setError(err?.message || "Unable to update song.");
+    } finally {
+      setEditSongSaving(false);
+    }
   };
 
-  const handlePdfChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setForm((prev) => ({ ...prev, pdfName: file.name, pdfUrl: url }));
-    setPdfPreviewUrl(url);
+  const handleUploadTrack = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file || !editSong || !user?.id) return;
+    if (file.type !== "audio/mpeg" && !file.name.toLowerCase().endsWith(".mp3")) {
+      setUploadMessage("Please select an MP3 file.");
+      return;
+    }
+    setUploadingTrack(true);
+    setUploadMessage("");
+    try {
+      const client = getSupabaseClient();
+      if (!client) throw new Error("Supabase env missing.");
+      const path = `user-${user.id}/${editSong.id}-${Date.now()}.mp3`;
+      const { error: uploadError } = await client.storage
+        .from("backing-tracks")
+        .upload(path, file, { upsert: true });
+      if (uploadError) throw uploadError;
+      const { data } = client.storage.from("backing-tracks").getPublicUrl(path);
+      const publicUrl = data?.publicUrl;
+      if (!publicUrl) throw new Error("Unable to get public URL.");
+      await updateSong(editSong.id, { backing_track_url: publicUrl });
+      setEditSongForm((prev) => ({ ...prev, backing_track_url: publicUrl }));
+      await loadSongs({ reset: true });
+      showToast("MP3 uploaded");
+      setUploadMessage("MP3 uploaded");
+    } catch (err) {
+      const message = err?.message || "Unable to upload MP3.";
+      setUploadMessage(message);
+      showToast(message);
+    } finally {
+      setUploadingTrack(false);
+      event.target.value = "";
+    }
   };
 
-  const handleCreateSession = () => {
-    const listSongs = currentSetlist?.songs || [];
-    const sessionSongs = listSongs.map((s, idx) => ({
-      id: s.id || `song-${idx}`,
-      title: s.title,
-      artist: s.artist || "",
-      backingTrackUrl: s.backingTrackUrl || "",
-      lyrics: s.lyrics || "",
-      pdfName: s.pdfName || "",
-      pdfUrl: s.pdfUrl || "",
-      votes: s.votes ?? 0,
-    }));
-    const code = createSession(sessionSongs);
-    setSessionSongs(code, sessionSongs);
-    setSessionCode(code);
+  const handleDeleteSong = async () => {
+    if (!deleteSongTarget) return;
+    try {
+      await deleteSetlistItemsBySong(deleteSongTarget.id);
+      await deleteSong(deleteSongTarget.id);
+      await loadSongs({ reset: true });
+      await loadSetlistItems();
+      showToast("Song deleted");
+    } catch (err) {
+      setError(err?.message || "Unable to delete song.");
+    } finally {
+      setDeleteSongTarget(null);
+    }
+  };
+
+  const handleCreateSetlistFromSubmission = async (gig, submission) => {
+    if (!user?.id || !submission?.id) return;
+    setCreatingFromSubmissionId(submission.id);
+    try {
+      const submittedDate = submission.submitted_at
+        ? new Date(submission.submitted_at).toLocaleDateString()
+        : new Date().toLocaleDateString();
+      const name = `${gig.title} (Client Request ${submittedDate})`;
+      const created = await createSetlist({ name, user_id: user.id });
+
+      const items = await fetchSubmissionItems(submission.id);
+      const payloads = items
+        .filter((item) => item.song_id)
+        .map((item) => ({
+          setlist_id: created.id,
+          song_id: item.song_id,
+          position: item.position,
+        }));
+      await upsertSetlistItems(payloads);
+
+      const data = await fetchSetlists();
+      setSetlists(data);
+      setSelectedSetlistId(created.id);
+      showToast("Setlist created from client request");
+    } catch (err) {
+      setError(err?.message || "Unable to create setlist from submission.");
+    } finally {
+      setCreatingFromSubmissionId(null);
+    }
+  };
+
+  const importLegacySetlists = async () => {
+    if (!user?.id) return;
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) {
+      showToast("No local setlists found");
+      return;
+    }
+    setImportingLegacy(true);
+    try {
+      const parsed = JSON.parse(raw);
+      const legacyLists = Array.isArray(parsed?.setlists) ? parsed.setlists : [];
+      if (!legacyLists.length) {
+        showToast("No local setlists found");
+        return;
+      }
+
+      const existingSongs = await fetchSongs();
+      const songMap = new Map(
+        existingSongs.map((song) => [
+          `${song.title || ""}::${song.original_artist || ""}`.toLowerCase(),
+          song.id,
+        ])
+      );
+
+      for (const legacy of legacyLists) {
+        if (!legacy?.name) continue;
+        const createdSetlist = await createSetlist({ name: legacy.name, user_id: user.id });
+        const legacySongs = Array.isArray(legacy.songs) ? legacy.songs : [];
+        const itemsPayload = [];
+        for (let i = 0; i < legacySongs.length; i += 1) {
+          const legacySong = legacySongs[i];
+          const title = legacySong?.title?.trim();
+          if (!title) continue;
+          const originalArtist = legacySong?.artist?.trim() || "";
+          const key = `${title}::${originalArtist}`.toLowerCase();
+          let songId = songMap.get(key);
+          if (!songId) {
+            const createdSong = await createSong({
+              user_id: user.id,
+              title,
+              original_artist: originalArtist || null,
+              backing_track_url: legacySong?.backingTrackUrl || null,
+              lyrics: legacySong?.lyrics || null,
+            });
+            songId = createdSong.id;
+            songMap.set(key, songId);
+          }
+          itemsPayload.push({
+            setlist_id: createdSetlist.id,
+            song_id: songId,
+            position: i + 1,
+          });
+        }
+        await upsertSetlistItems(itemsPayload);
+      }
+
+      const setlistsData = await fetchSetlists();
+      setSetlists(setlistsData);
+      await loadSongs({ reset: true });
+      setHasLegacySetlists(false);
+      showToast("Imported local setlists");
+    } catch (err) {
+      setError(err?.message || "Unable to import local setlists.");
+    } finally {
+      setImportingLegacy(false);
+    }
+  };
+
+  const handleAddToSetlist = async (song) => {
+    if (!currentSetlist) {
+      showToast("Select a setlist first");
+      return;
+    }
+    if (setlistItems.some((item) => item.song?.id === song.id)) {
+      showToast("Already in setlist");
+      return;
+    }
+    try {
+      const nextPosition = setlistItems.length + 1;
+      const created = await addSetlistItem({
+        setlist_id: currentSetlist.id,
+        song_id: song.id,
+        position: nextPosition,
+      });
+      const nextItems = [...setlistItems, created].sort(
+        (a, b) => a.position - b.position
+      );
+      setSetlistItems(nextItems);
+    } catch (err) {
+      const message = err?.message || "";
+      if (err?.code === "23505" || message.toLowerCase().includes("duplicate")) {
+        showToast("Already in setlist");
+      } else {
+        setError(message || "Unable to add song to setlist.");
+      }
+    }
+  };
+
+  const showToast = (message) => {
+    setToast(message);
+    setTimeout(() => setToast(""), 1500);
   };
 
   const handleCopy = async (text) => {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setToast("Copied");
-      setTimeout(() => setToast(""), 1500);
+      showToast("Copied");
     } catch (e) {
       console.error("Copy failed", e);
     }
   };
 
-  const openPerformer = () => {
-    if (sessionCode) navigate(`/performer/${sessionCode}`);
+  const handleLoadMoreSongs = async () => {
+    if (songsLoading || !songsHasMore) return;
+    await loadSongs({ reset: false });
   };
 
-  const openPdf = (song) => {
-    if (song.pdfUrl) window.open(song.pdfUrl, "_blank", "noopener,noreferrer");
-  };
-
-  const getTemplateHref = () => {
-    const content = "setlist_name,song_title,artist,backing_track_url,lyrics\nMy Set,Song A,Artist A,http://example.com,Verse 1\\nVerse 2\n";
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(content)}`;
-  };
-
-  const parseCsv = (text) => {
-    const rows = [];
-    const errors = [];
-    const parsed = simpleCsvParse(text);
-    parsed.forEach((cols, idx) => {
-      if (!cols.length || cols.every((c) => !c.trim())) return;
-      const [
-        setlist_name = "",
-        song_title = "",
-        artist = "",
-        backing_track_url = "",
-        lyrics = "",
-      ] = cols;
-
-      const isHeader =
-        idx === 0 &&
-        setlist_name.trim().toLowerCase() === "setlist_name" &&
-        song_title.trim().toLowerCase() === "song_title";
-      if (isHeader) return;
-      if (!song_title.trim()) {
-        errors.push({ row: idx + 1, message: "Missing song_title" });
-        rows.push({ setlist_name, song_title, artist, backing_track_url, lyrics, error: "Missing song_title" });
-        return;
-      }
-      rows.push({
-        setlist_name: setlist_name.trim(),
-        song_title: song_title.trim(),
-        artist: artist.trim(),
-        backing_track_url: backing_track_url.trim(),
-        lyrics,
-      });
-    });
-    return { rows, errors };
-  };
-
-  const handleCsvFile = (e, setters) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".csv")) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result;
-      if (typeof text !== "string") return;
-      const { rows, errors } = parseCsv(text);
-      setters.setImportFileName(file.name);
-      setters.setImportRows(rows);
-      setters.setImportErrors(errors);
-    };
-    reader.readAsText(file);
-  };
-
-  const setlistSidebar = (
-    <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.25em] text-white/60">Setlists</p>
-          <h3 className="text-lg font-semibold text-white">Playlists</h3>
-        </div>
-        <button
-          type="button"
-          onClick={handleCreateSetlist}
-          className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-        >
-          New
-        </button>
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-midnight text-white flex items-center justify-center">
+        <p className="text-sm text-white/70">Loading dashboard...</p>
       </div>
-      <div className="space-y-2">
-        {setlists.map((list) => (
-          <div
-            key={list.id}
-            className={`flex items-center justify-between rounded-xl border px-3 py-2 ${
-              list.id === selectedId ? "border-brandPink/60 bg-white/10" : "border-white/10 bg-white/5"
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() => selectSetlist(list.id)}
-              className="text-left text-sm font-semibold text-white flex-1"
-            >
-              {list.name}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDeleteSetlist(list.id)}
-              className="text-xs text-white/60 hover:text-white"
-            >
-              Delete
-            </button>
-          </div>
-        ))}
-        {!setlists.length && <p className="text-sm text-white/60">No setlists yet.</p>}
-      </div>
-    </div>
-  );
-
-  const songsPanel = (
-    <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.25em] text-white/60">Songs</p>
-          <h3 className="text-lg font-semibold text-white">{currentSetlist?.name || "Select a setlist"}</h3>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleCreateSession}
-            disabled={!hasSetlist}
-            className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-4 py-2 text-sm font-semibold text-white shadow-soft transition hover:opacity-95 disabled:opacity-50"
-          >
-            Create session from setlist
-          </button>
-          {sessionCode && (
-            <button
-              type="button"
-              onClick={openPerformer}
-              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-            >
-              Open performer
-            </button>
-          )}
-        </div>
-      </div>
-
-      {sessionCode && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2 text-sm text-white/70">
-          <LinkRow label="Session code" value={sessionCode} onCopy={() => handleCopy(sessionCode)} />
-          <LinkRow label="Audience link" value={audienceLink} onCopy={() => handleCopy(audienceLink)} />
-          <LinkRow label="Performer link" value={performerLink} onCopy={() => handleCopy(performerLink)} />
-        </div>
-      )}
-
-      <form onSubmit={handleSubmitSong} className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <input
-            type="text"
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-            placeholder="Song title *"
-            className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none focus:ring-2 focus:ring-brandPink/30 disabled:opacity-50"
-            disabled={!hasSetlist}
-            required
-            ref={titleRef}
-          />
-          <input
-            type="text"
-            value={form.artist}
-            onChange={(e) => setForm({ ...form, artist: e.target.value })}
-            placeholder="Artist (optional)"
-            className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none focus:ring-2 focus:ring-brandPink/30 disabled:opacity-50"
-            disabled={!hasSetlist}
-          />
-        </div>
-        <input
-          type="url"
-          value={form.backingTrackUrl}
-          onChange={(e) => setForm({ ...form, backingTrackUrl: e.target.value })}
-          placeholder="Backing track URL (optional)"
-          className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none focus:ring-2 focus:ring-brandPink/30 disabled:opacity-50"
-          disabled={!hasSetlist}
-        />
-        <textarea
-          value={form.lyrics}
-          onChange={(e) => setForm({ ...form, lyrics: e.target.value })}
-          placeholder="Lyrics / notes (optional)"
-          rows={3}
-          className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none focus:ring-2 focus:ring-brandPink/30 disabled:opacity-50"
-          disabled={!hasSetlist}
-        />
-        <div className="flex flex-col gap-2">
-          <label className="text-xs text-white/60">Attach PDF (optional)</label>
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={handlePdfChange}
-            disabled={!hasSetlist}
-            className="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-brandPurple/80 file:px-4 file:py-2 file:text-white file:font-semibold hover:file:bg-brandPink/80 disabled:opacity-50"
-          />
-          {form.pdfName && (
-            <div className="space-y-2">
-              <p className="text-xs text-white/60">Attached: {form.pdfName}</p>
-              {form.pdfUrl && (
-                <div
-                  className="rounded-xl border border-white/10 bg-black/40 overflow-hidden cursor-pointer"
-                  onClick={() => setPdfPreviewUrl(form.pdfUrl)}
-                  title="Click to enlarge"
-                >
-                  <iframe title="PDF preview" src={form.pdfUrl} className="w-full h-40" />
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="flex gap-3">
-          <button
-            type="submit"
-            disabled={!hasSetlist}
-            className="button-glow inline-flex items-center justify-center rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-sm font-semibold text-white shadow-soft transition hover:opacity-95 disabled:opacity-50"
-          >
-            {editingId ? "Save changes" : "Add song"}
-          </button>
-          <button
-            type="button"
-            disabled={!hasSetlist}
-            onClick={() => setBulkOpen(true)}
-            className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10 disabled:opacity-50"
-          >
-            Bulk add
-          </button>
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-          >
-            Import from Google Sheets / CSV
-          </button>
-          {editingId && (
-            <button
-              type="button"
-              onClick={() => {
-                setForm(emptySong);
-                setEditingId(null);
-              }}
-              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
-      </form>
-
-      <div className="space-y-2">
-        {songs.length === 0 && <p className="text-sm text-white/60">No songs yet.</p>}
-        {songs.map((song, idx) => (
-          <div
-            key={song.id}
-            className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/80 space-y-2"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-base font-semibold text-white">{song.title}</p>
-                <p className="text-xs text-white/60">{song.artist || "Artist N/A"}</p>
-                <p className="text-xs text-white/60">Votes: —</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => moveSong(currentSetlist.id, song.id, -1)}
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => moveSong(currentSetlist.id, song.id, 1)}
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-                >
-                  ↓
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {song.lyrics && (
-                <button
-                  type="button"
-                  onClick={() => setViewLyricsSong(song)}
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-                >
-                  View lyrics
-                </button>
-              )}
-              {song.backingTrackUrl && (
-                <a
-                  href={song.backingTrackUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-                >
-                  Track link
-                </a>
-              )}
-              {song.pdfUrl && (
-                <button
-                  type="button"
-                  onClick={() => openPdf(song)}
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-                >
-                  Open PDF
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => handleEdit(song)}
-                className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                onClick={() => removeSong(currentSetlist.id, song.id)}
-                className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-      {toast && (
-        <div className="text-xs text-green-300">{toast}</div>
-      )}
-    </div>
-  );
+    );
+  }
 
   return (
     <>
-      <SEO
-        title="Performer Dashboard | PickMySet"
-        description={seoDescription}
-        robots="noindex, nofollow"
-      />
+      <SEO title="Performer Dashboard | PickMySet" description={seoDescription} robots="noindex, nofollow" />
       <main className="py-10 space-y-8">
-      <div className="space-y-2">
-        <p className="text-xs uppercase tracking-[0.3em] text-white/50">Performer Dashboard</p>
-        <h1 className="text-3xl sm:text-4xl font-extrabold">Setlists & live sessions</h1>
-        <p className="text-sm text-white/65">
-          Build setlists, attach lyrics/PDFs, then launch live audience and performer screens.
-        </p>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="glass-card rounded-3xl p-5 soft-border space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.25em] text-white/60">Ready to go live?</p>
-              <h3 className="text-lg font-semibold text-white">Pre-gig checklist</h3>
-            </div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-2">
+            <p className="text-xs uppercase tracking-[0.3em] text-white/50">Performer Dashboard</p>
+            <h1 className="text-3xl sm:text-4xl font-extrabold">Setlists & client requests</h1>
+            <p className="text-sm text-white/65">
+              Build your song library, craft setlists, and collect client song requests for gigs.
+            </p>
           </div>
-          <div className="space-y-2 text-sm text-white/80">
-            <ChecklistItem label="Setlist selected" done={hasSetlist} />
-            <ChecklistItem label="At least 1 song added" done={stats.total > 0} />
-            <ChecklistItem label="Lyrics or PDF added" done={stats.withLyrics > 0 || stats.withPdfs > 0} />
-            <ChecklistItem label="Session created" done={Boolean(sessionCode)} />
-          </div>
+          <a
+            href="/perform"
+            className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+          >
+            Open gig mode
+          </a>
         </div>
-        <div className="glass-card rounded-3xl p-5 soft-border space-y-3">
-          <div className="flex items-center justify-between">
+
+        {error && (
+          <div className="rounded-2xl border border-brandPink/40 bg-brandPink/10 px-4 py-3 text-sm text-white/80">
+            {error}
+          </div>
+        )}
+
+        <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-xs uppercase tracking-[0.25em] text-white/60">Setlist stats</p>
+              <p className="text-xs uppercase tracking-[0.25em] text-white/60">Status</p>
               <h3 className="text-lg font-semibold text-white">{currentSetlist?.name || "Select a setlist"}</h3>
             </div>
+            <button
+              type="button"
+              onClick={() => setGigModalOpen(true)}
+              className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-4 py-2 text-sm font-semibold text-white shadow-soft transition hover:opacity-95"
+            >
+              Create client link
+            </button>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm text-white/80">
+          <div className="grid grid-cols-2 gap-3 text-sm text-white/80 sm:grid-cols-4">
             <StatTile label="Total songs" value={stats.total} />
             <StatTile label="With lyrics" value={stats.withLyrics} />
             <StatTile label="With tracks" value={stats.withTracks} />
-            <StatTile label="With PDFs" value={stats.withPdfs} />
+            <StatTile label="Loaded songs" value={songs.length} />
           </div>
+          <div className="flex flex-wrap gap-2 text-xs text-white/80">
+            <ChecklistPill label="Setlist selected" done={checklist.setlistSelected} />
+            <ChecklistPill label="At least 1 song added" done={checklist.songAdded} />
+            <ChecklistPill label="Client link created" done={checklist.clientLinkCreated} />
+            <ChecklistPill label="Client request received" done={checklist.clientRequestReceived} />
+          </div>
+          {lastLink && (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/70">
+              <LinkRow label="Latest client link" value={lastLink} onCopy={() => handleCopy(lastLink)} />
+            </div>
+          )}
         </div>
-      </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">{setlistSidebar}</div>
-        <div className="lg:col-span-2 space-y-6">{songsPanel}</div>
-      </div>
-    </main>
-
-      {viewLyricsSong && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-white/15 bg-midnight p-6 shadow-soft space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-white/60">Lyrics</p>
-                <h4 className="text-xl font-semibold text-white">{viewLyricsSong.title}</h4>
-                {viewLyricsSong.artist && <p className="text-sm text-white/60">{viewLyricsSong.artist}</p>}
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-6">
+            <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-white/60">Setlists</p>
+                  <h3 className="text-lg font-semibold text-white">Build order</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCreateSetlist}
+                  className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+                >
+                  New
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setViewLyricsSong(null)}
-                className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-              >
-                Close
-              </button>
+              {hasLegacySetlists && (
+                <div className="rounded-2xl border border-brandPink/40 bg-brandPink/10 px-3 py-2 text-xs text-white/80 flex flex-wrap items-center justify-between gap-2">
+                  <span>Local setlists found on this device.</span>
+                  <button
+                    type="button"
+                    onClick={importLegacySetlists}
+                    disabled={importingLegacy}
+                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10 disabled:opacity-60"
+                  >
+                    {importingLegacy ? "Importing..." : "Import local setlists"}
+                  </button>
+                </div>
+              )}
+              <div className="space-y-2">
+                {setlists.map((list) => (
+                  <div
+                    key={list.id}
+                    className={`flex items-center justify-between rounded-xl border px-3 py-2 ${
+                      list.id === selectedSetlistId
+                        ? "border-brandPink/60 bg-white/10"
+                        : "border-white/10 bg-white/5"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSetlistId(list.id)}
+                      className="text-left text-sm font-semibold text-white flex-1"
+                    >
+                      {list.name}
+                    </button>
+                    <div className="flex items-center gap-2 text-xs text-white/60">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedSetlistId(list.id);
+                          setEditSetlistId(list.id);
+                          setEditSetlistOpen(true);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button type="button" onClick={() => handleDeleteSetlist(list.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!setlists.length && <p className="text-sm text-white/60">No setlists yet.</p>}
+              </div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/80 whitespace-pre-wrap">
-              {viewLyricsSong.lyrics}
-            </div>
-          </div>
-        </div>
-      )}
 
-      {bulkOpen && (
-        <Modal title="Bulk add songs" onClose={() => setBulkOpen(false)}>
-          <div className="space-y-3 text-sm text-white/70">
-            <p>Format: Title — Artist (artist optional). One song per line.</p>
-            <textarea
-              value={bulkText}
-              onChange={(e) => setBulkText(e.target.value)}
-              rows={8}
-              className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none focus:ring-2 focus:ring-brandPink/30"
-              placeholder="Song A — Artist A\nSong B - Artist B\nSong C"
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setBulkOpen(false)}
-                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
-              >
-                Cancel
-              </button>
+            <div className="glass-card rounded-3xl p-5 soft-border space-y-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-white/60">Selected setlist</p>
+                <h3 className="text-lg font-semibold text-white">{currentSetlist?.name || "Select a setlist"}</h3>
+              </div>
+              <div className="text-sm text-white/70 space-y-2">
+                <p>{setlistSongs.length} songs in this setlist.</p>
+                <p className="text-xs text-white/60">Edit to add, reorder, or remove songs.</p>
+              </div>
               <button
                 type="button"
                 onClick={() => {
                   if (!currentSetlist) return;
-                  const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
-                  let added = 0;
-                  lines.forEach((line) => {
-                    let title = line;
-                    let artist = "";
-                    if (line.includes("—")) {
-                      const [t, a] = line.split("—");
-                      title = t.trim();
-                      artist = (a || "").trim();
-                    } else if (line.includes(" - ")) {
-                      const [t, a] = line.split(" - ");
-                      title = t.trim();
-                      artist = (a || "").trim();
-                    }
-                    if (!title) return;
-                    addOrUpdateSong(currentSetlist.id, {
-                      id: `song-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-                      title,
-                      artist,
-                      backingTrackUrl: "",
-                      lyrics: "",
-                      pdfName: "",
-                      pdfUrl: "",
-                    });
-                    added += 1;
-                  });
-                  setBulkText("");
-                  setBulkOpen(false);
-                  setToast(added ? `Added ${added} songs` : "No songs added");
-                  setTimeout(() => setToast(""), 2000);
-                  setTimeout(() => titleRef.current?.focus(), 0);
+                  setEditSetlistId(currentSetlist.id);
+                  setEditSetlistOpen(true);
                 }}
-                className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-xs font-semibold text-white shadow-soft transition hover:opacity-95"
+                disabled={!currentSetlist}
+                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10 disabled:opacity-60"
               >
-                Add songs
+                Edit setlist
               </button>
             </div>
           </div>
-        </Modal>
-      )}
 
-      {importOpen && (
-        <Modal title="Import from Google Sheets / CSV" onClose={() => setImportOpen(false)}>
-          <div className="space-y-3 text-sm text-white/70">
-      <div className="flex items-center justify-between gap-2">
-        <p>Upload CSV (columns: setlist_name, song_title, artist, backing_track_url, lyrics)</p>
-        <a
-          className="text-xs text-brandPink hover:text-white underline"
-          href={getTemplateHref()}
-          download="pickmyset-template.csv"
-        >
-          Download CSV template
-        </a>
-            </div>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={(e) => handleCsvFile(e, {
-                setImportFileName,
-                setImportRows,
-                setImportErrors,
-              })}
-              className="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-brandPurple/80 file:px-4 file:py-2 file:text-white file:font-semibold hover:file:bg-brandPink/80"
-            />
-            {importFileName && <p className="text-xs text-white/60">Loaded: {importFileName}</p>}
-            {importRows.length > 0 && (
-              <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-                <p className="text-xs uppercase tracking-wide text-white/60">Preview (first 5)</p>
-                <div className="space-y-1 text-xs text-white/70">
-                  {importRows.slice(0, 5).map((row, idx) => (
-                    <div
-                      key={idx}
-                      className={`rounded-lg border px-2 py-1 ${row.error ? "border-brandPink/70 bg-brandPink/10" : "border-white/10 bg-white/5"}`}
-                    >
-                      <p className="text-white">{row.song_title || "(missing title)"}{row.artist ? ` — ${row.artist}` : ""}</p>
-                      <p className="text-white/60">
-                        Setlist: {row.setlist_name || currentSetlist?.name || "Current"} {row.error ? ` · ${row.error}` : ""}
-                      </p>
-                    </div>
-                  ))}
+          <div className="space-y-6">
+            <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-white/60">Song library</p>
+                  <h3 className="text-lg font-semibold text-white">Your songs</h3>
                 </div>
+                <input
+                  type="text"
+                  value={songSearch}
+                  onChange={(e) => setSongSearch(e.target.value)}
+                  placeholder="Search"
+                  className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+                />
               </div>
-            )}
-            {importErrors.length > 0 && (
-              <div className="rounded-xl border border-brandPink/50 bg-brandPink/10 p-3 text-xs text-white/80">
-                {importErrors.map((err, idx) => (
-                  <p key={idx}>Row {err.row}: {err.message}</p>
-                ))}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSongModalTab("add");
+                    setSongModalOpen(true);
+                  }}
+                  className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-4 py-2 text-xs font-semibold text-white shadow-soft transition hover:opacity-95"
+                >
+                  + Add songs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSongModalTab("import");
+                    setSongModalOpen(true);
+                  }}
+                  className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+                >
+                  Import CSV
+                </button>
               </div>
-            )}
-            <div className="flex justify-end gap-2">
+            </div>
+
+            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+              {songsLoading && songs.length === 0 && (
+                <p className="text-sm text-white/60">Loading songs...</p>
+              )}
+              {!songsLoading && songs.length === 0 && (
+                <p className="text-sm text-white/60">No songs yet.</p>
+              )}
+              {songs.map((song) => (
+                <div
+                  key={song.id}
+                  className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-base font-semibold text-white">{song.title}</p>
+                      <p className="text-xs text-white/60">{song.original_artist || "Artist N/A"}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleAddToSetlist(song)}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+                      >
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleEditSong(song)}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70 transition hover:border-brandPink hover:text-white"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteSongTarget(song)}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70 transition hover:border-brandPink hover:text-white"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {song.lyrics && (
+                      <span className="rounded-full border border-white/15 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70">
+                        Lyrics
+                      </span>
+                    )}
+                    {song.backing_track_url && (
+                      <span className="rounded-full border border-white/15 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70">
+                        Track link
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {songsHasMore && (
+                <button
+                  type="button"
+                  onClick={handleLoadMoreSongs}
+                  disabled={songsLoading}
+                  className="w-full rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10 disabled:opacity-60"
+                >
+                  {songsLoading ? "Loading..." : "Load more"}
+                </button>
+              )}
+            </div>
+          </div>
+
+            </div>
+          <div className="glass-card rounded-3xl p-5 soft-border space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-white/60">Client links</p>
+                <h3 className="text-lg font-semibold text-white">Shareable gigs</h3>
+              </div>
               <button
                 type="button"
-                onClick={() => setImportOpen(false)}
+                onClick={() => setGigModalOpen(true)}
+                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+              >
+                New
+              </button>
+            </div>
+            <div className="space-y-3">
+              {gigs.length === 0 && <p className="text-sm text-white/60">No client links yet.</p>}
+              {gigs.map((gig) => {
+                const link = `${window.location.origin}/c/${gig.share_token}`;
+                const submissions = gig.client_submissions || [];
+                return (
+                  <div key={gig.id} className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-white">{gig.title}</p>
+                        <p className="text-xs text-white/60">
+                          {gig.event_date ? new Date(gig.event_date).toLocaleDateString() : "Date TBD"}
+                        </p>
+                      </div>
+                      <span className="text-xs text-white/60">
+                        {submissions.length} submission{submissions.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(link)}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+                      >
+                        Copy link
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenSubmissions(gig)}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+                      >
+                        View submissions
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteGigTarget(gig)}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70 transition hover:border-brandPink hover:text-white"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {gigModalOpen && (
+        <Modal title="Create client link" onClose={() => setGigModalOpen(false)}>
+          <form onSubmit={handleCreateGig} className="space-y-4">
+            <input
+              type="text"
+              value={gigForm.title}
+              onChange={(e) => setGigForm({ ...gigForm, title: e.target.value })}
+              placeholder="Gig title *"
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+              required
+            />
+            <input
+              type="text"
+              value={gigForm.clientName}
+              onChange={(e) => setGigForm({ ...gigForm, clientName: e.target.value })}
+              placeholder="Client name (optional)"
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+            />
+            <input
+              type="date"
+              value={gigForm.eventDate}
+              onChange={(e) => setGigForm({ ...gigForm, eventDate: e.target.value })}
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+            />
+            <select
+              value={gigForm.baseSetlistId}
+              onChange={(e) => setGigForm({ ...gigForm, baseSetlistId: e.target.value })}
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white focus:border-brandPink focus:outline-none"
+            >
+              <option value="">Base setlist (optional)</option>
+              {setlists.map((list) => (
+                <option key={list.id} value={list.id}>
+                  {list.name}
+                </option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setGigModalOpen(false)}
                 className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
               >
                 Cancel
               </button>
               <button
-                type="button"
-                disabled={!importRows.length}
-                onClick={() => {
-                  if (!currentSetlist && !importRows.some((r) => r.setlist_name)) return;
-                  let added = 0;
-                  let lastSetlistId = currentSetlist?.id || null;
-                  const ensureSetlistId = (name) => {
-                    if (name) {
-                      const existing = setlists.find((s) => s.name.toLowerCase() === name.toLowerCase());
-                      if (existing) return existing.id;
-                      const newId = createSetlist(name);
-                      return newId;
-                    }
-                    return lastSetlistId;
-                  };
-                  importRows.forEach((row) => {
-                    if (row.error || !row.song_title) return;
-                    const targetId = ensureSetlistId(row.setlist_name);
-                    if (!targetId) return;
-                    lastSetlistId = targetId;
-                    addOrUpdateSong(targetId, {
-                      id: `song-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-                      title: row.song_title,
-                      artist: row.artist || "",
-                      backingTrackUrl: row.backing_track_url || "",
-                      lyrics: row.lyrics || "",
-                      pdfName: "",
-                      pdfUrl: "",
-                    });
-                    added += 1;
-                  });
-                  setToast(added ? `Imported ${added} songs` : "No songs imported");
-                  setImportOpen(false);
-                  setImportRows([]);
-                  setImportErrors([]);
-                  setImportFileName("");
-                  setBulkText("");
-                  setTimeout(() => setToast(""), 2500);
-                  setTimeout(() => titleRef.current?.focus(), 0);
-                }}
-                className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-xs font-semibold text-white shadow-soft transition hover:opacity-95 disabled:opacity-50"
+                type="submit"
+                className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-xs font-semibold text-white shadow-soft transition hover:opacity-95"
               >
-                Import songs
+                Create link
               </button>
             </div>
+          </form>
+        </Modal>
+      )}
+
+      {submissionsModalOpen && submissionsGig && (
+        <Modal
+          title={`Submissions — ${submissionsGig.title}`}
+          onClose={() => {
+            setSubmissionsModalOpen(false);
+            setSubmissionsGig(null);
+            setSubmissions([]);
+          }}
+        >
+          <div className="space-y-3">
+            {submissionsLoading && (
+              <div className="space-y-3">
+                {[...Array(3)].map((_, idx) => (
+                  <div key={idx} className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+                    <div className="h-3 w-1/3 rounded bg-white/10" />
+                    <div className="h-3 w-1/4 rounded bg-white/10" />
+                    <div className="h-3 w-2/3 rounded bg-white/10" />
+                  </div>
+                ))}
+              </div>
+            )}
+            {!submissionsLoading && submissions.length === 0 && (
+              <p className="text-sm text-white/60">No submissions yet.</p>
+            )}
+            {!submissionsLoading &&
+              submissions.map((submission) => (
+                <div key={submission.id} className="rounded-xl border border-white/10 bg-black/40 p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>{new Date(submission.submitted_at).toLocaleString()}</span>
+                    <span>{submission.items?.length || 0} songs</span>
+                  </div>
+                  {submission.notes && (
+                    <p className="text-sm text-white/70">Notes: {submission.notes}</p>
+                  )}
+                  <ol className="text-sm text-white/80 space-y-1">
+                    {(submission.items || [])
+                      .slice()
+                      .sort((a, b) => a.position - b.position)
+                      .map((item, idx) => (
+                        <li key={item.id}>
+                          {idx + 1}. {item.song?.title || "Unknown song"}
+                        </li>
+                      ))}
+                  </ol>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateSetlistFromSubmission(submissionsGig, submission)}
+                    disabled={creatingFromSubmissionId === submission.id}
+                    className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10 disabled:opacity-60"
+                  >
+                    {creatingFromSubmissionId === submission.id
+                      ? "Creating setlist..."
+                      : "Create setlist from this"}
+                  </button>
+                </div>
+              ))}
           </div>
         </Modal>
       )}
 
-      {pdfPreviewUrl && (
-        <Modal title="PDF preview" onClose={() => setPdfPreviewUrl("")}>
-          <div className="rounded-xl border border-white/10 bg-black/50 overflow-hidden">
-            <iframe title="PDF preview" src={pdfPreviewUrl} className="w-full h-[70vh]" />
+      {deleteGigTarget && (
+        <Modal title="Delete client link?" onClose={() => setDeleteGigTarget(null)}>
+          <p className="text-sm text-white/70">
+            This will delete the share link and all submissions for this gig.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setDeleteGigTarget(null)}
+              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteGig}
+              className="rounded-full border border-brandPink/60 bg-brandPink/20 px-4 py-2 text-xs font-semibold text-white transition hover:bg-brandPink/30"
+            >
+              Delete
+            </button>
           </div>
         </Modal>
       )}
+
+      <EditSetlistModal
+        isOpen={editSetlistOpen}
+        setlist={editSetlist}
+        onClose={() => {
+          setEditSetlistOpen(false);
+          setEditSetlistId(null);
+        }}
+        onToast={showToast}
+        onRefreshSetlists={async () => {
+          try {
+            const data = await fetchSetlists();
+            setSetlists(data);
+          } catch (err) {
+            setError(err?.message || "Unable to refresh setlists.");
+          }
+        }}
+        onRefreshSetlistItems={loadSetlistItems}
+      />
+
+      <SongLibraryModal
+        isOpen={songModalOpen}
+        initialTab={songModalTab}
+        userId={user?.id}
+        onClose={() => setSongModalOpen(false)}
+        onRefresh={() => loadSongs({ reset: true })}
+        onToast={showToast}
+      />
+
+      {editSong && (
+        <Modal title="Edit song" onClose={() => setEditSong(null)}>
+          <form onSubmit={handleSaveSong} className="space-y-4">
+            <input
+              type="text"
+              value={editSongForm.title}
+              onChange={(e) => setEditSongForm({ ...editSongForm, title: e.target.value })}
+              placeholder="Song title *"
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+              required
+            />
+            <input
+              type="text"
+              value={editSongForm.original_artist}
+              onChange={(e) => setEditSongForm({ ...editSongForm, original_artist: e.target.value })}
+              placeholder="Original artist (optional)"
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+            />
+            <input
+              type="url"
+              value={editSongForm.backing_track_url}
+              onChange={(e) => setEditSongForm({ ...editSongForm, backing_track_url: e.target.value })}
+              placeholder="Backing track URL (optional)"
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+            />
+            <div className="space-y-2">
+              <label className="text-xs uppercase tracking-[0.25em] text-white/60">Upload MP3</label>
+              <input
+                type="file"
+                accept="audio/mpeg,.mp3"
+                onChange={handleUploadTrack}
+                disabled={uploadingTrack}
+                className="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-brandPurple/80 file:px-4 file:py-2 file:text-white file:font-semibold hover:file:bg-brandPink/80 disabled:opacity-60"
+              />
+              {uploadMessage && (
+                <p className="text-xs text-white/60">{uploadMessage}</p>
+              )}
+              {editSongForm.backing_track_url && (
+                <audio controls src={editSongForm.backing_track_url} className="w-full" />
+              )}
+            </div>
+            <textarea
+              value={editSongForm.lyrics}
+              onChange={(e) => setEditSongForm({ ...editSongForm, lyrics: e.target.value })}
+              placeholder="Lyrics (optional)"
+              rows={4}
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:border-brandPink focus:outline-none"
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEditSong(null)}
+                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={editSongSaving}
+                className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-xs font-semibold text-white shadow-soft transition hover:opacity-95 disabled:opacity-60"
+              >
+                {editSongSaving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {deleteSongTarget && (
+        <Modal title="Delete song?" onClose={() => setDeleteSongTarget(null)}>
+          <p className="text-sm text-white/70">This will remove it from all setlists.</p>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setDeleteSongTarget(null)}
+              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteSong}
+              className="rounded-full border border-brandPink/60 bg-brandPink/20 px-4 py-2 text-xs font-semibold text-white transition hover:bg-brandPink/30"
+            >
+              Delete
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {toast && <div className="text-xs text-green-300">{toast}</div>}
     </>
   );
 }
@@ -742,6 +1136,21 @@ function ChecklistItem({ label, done }) {
   );
 }
 
+function ChecklistPill({ label, done }) {
+  return (
+    <div
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+        done
+          ? "border-green-400/40 bg-green-400/10 text-green-200"
+          : "border-white/10 bg-white/5 text-white/70"
+      }`}
+    >
+      <span className="text-[10px]">{done ? "✓" : "•"}</span>
+      {label}
+    </div>
+  );
+}
+
 function StatTile({ label, value }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
@@ -752,9 +1161,23 @@ function StatTile({ label, value }) {
 }
 
 function Modal({ title, onClose, children }) {
+  React.useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-      <div className="w-full max-w-3xl rounded-2xl border border-white/15 bg-midnight p-6 shadow-soft space-y-4">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl rounded-2xl border border-white/15 bg-midnight p-6 shadow-soft space-y-4"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <h4 className="text-lg font-semibold text-white">{title}</h4>
           <button
@@ -769,52 +1192,4 @@ function Modal({ title, onClose, children }) {
       </div>
     </div>
   );
-}
-
-// Lightweight CSV parser with quoted field and newline support
-function simpleCsvParse(text) {
-  const rows = [];
-  let current = [];
-  let field = "";
-  let inQuotes = false;
-
-  const pushField = () => {
-    current.push(field);
-    field = "";
-  };
-  const pushRow = () => {
-    rows.push(current);
-    current = [];
-  };
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    const next = text[i + 1];
-    if (inQuotes) {
-      if (char === '"' && next === '"') {
-        field += '"';
-        i += 1;
-      } else if (char === '"') {
-        inQuotes = false;
-      } else {
-        field += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ",") {
-        pushField();
-      } else if (char === "\n") {
-        pushField();
-        pushRow();
-      } else if (char === "\r") {
-        // ignore
-      } else {
-        field += char;
-      }
-    }
-  }
-  pushField();
-  pushRow();
-  return rows;
 }

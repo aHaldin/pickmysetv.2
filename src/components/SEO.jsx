@@ -2,9 +2,9 @@ import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
 
 const CANONICAL_BASE = "https://pickmyset.com";
-const DEFAULT_TITLE = "PickMySet – Let the crowd pick the next song";
+const DEFAULT_TITLE = "PickMySet – Setlists & client requests";
 const DEFAULT_DESCRIPTION =
-  "PickMySet gives performers everything in one place: live audience voting, setlists, lyrics, and backing tracks—built for singers, bands and DJs.";
+  "PickMySet helps performers manage their song library, build setlists, and collect client requests before the gig.";
 const DEFAULT_ROBOTS = "index, follow";
 const DEFAULT_OG_TYPE = "website";
 const DEFAULT_OG_IMAGE = "https://pickmyset.com/og-image.png";

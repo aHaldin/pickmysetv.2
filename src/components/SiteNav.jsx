@@ -4,8 +4,6 @@ import { getUser, onAuthStateChange, signOut } from "../lib/auth";
 
 const links = [
   { to: '/', label: 'Home' },
-  { to: '/vote/demo', label: 'Audience Demo' },
-  { to: '/performer/demo', label: 'Performer Demo' },
 ];
 
 const linkClasses = ({ isActive }) =>
@@ -39,6 +37,12 @@ export default function SiteNav() {
         {user ? (
           <div className="flex items-center gap-3">
             <Link
+              to="/perform"
+              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
+            >
+              Gig mode
+            </Link>
+            <Link
               to="/dashboard"
               className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
             >
@@ -54,10 +58,10 @@ export default function SiteNav() {
           </div>
         ) : (
           <Link
-            to="/#waitlist"
-            className="button-glow rounded-full bg-gradient-to-r from-brandPurple to-brandPink px-5 py-2 text-sm font-semibold text-white shadow-soft transition hover:opacity-95"
+            to="/login"
+            className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-brandPink hover:bg-white/10"
           >
-            Join the waitlist
+            Log in
           </Link>
         )}
       </div>

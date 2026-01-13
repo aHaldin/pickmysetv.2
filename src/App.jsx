@@ -1,16 +1,17 @@
 import React from "react";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import SiteNav from "./components/SiteNav";
-import SEO from "./components/SEO";
 
 import Home from "./pages/Home";
-import VotePage from "./pages/VoteDemo";
-import PerformerPage from "./pages/PerformerDemo";
 import Dashboard from "./pages/Dashboard";
-import { createSession } from "./hooks/useSessionStore";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import ForgotPassword from "./pages/ForgotPassword";
 import ProtectedRoute from "./components/ProtectedRoute";
+import ClientRequest from "./pages/ClientRequest";
+import PerformList from "./pages/PerformList";
+import PerformGig from "./pages/PerformGig";
+import PerformLive from "./pages/PerformLive";
 
 function BackgroundDecor() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route
               path="/dashboard"
               element={
@@ -41,44 +43,35 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/vote/demo" element={<VoteRedirect />} />
-            <Route path="/performer/demo" element={<PerformerRedirect />} />
-            <Route path="/vote/:code" element={<VotePage />} />
-            <Route path="/performer/:code" element={<PerformerPage />} />
+            <Route
+              path="/perform"
+              element={
+                <ProtectedRoute>
+                  <PerformList />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/perform/:gigId"
+              element={
+                <ProtectedRoute>
+                  <PerformGig />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/perform/live"
+              element={
+                <ProtectedRoute>
+                  <PerformLive />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/c/:shareToken" element={<ClientRequest />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
       </div>
     </div>
-  );
-}
-
-function VoteRedirect() {
-  const navigate = useNavigate();
-  React.useEffect(() => {
-    const code = createSession();
-    navigate(`/vote/${code}`, { replace: true });
-  }, [navigate]);
-  return (
-    <SEO
-      title="Audience Voting Demo | PickMySet"
-      description="Try the PickMySet audience voting demo — no app, no login, just vote."
-      canonicalPath="/vote/demo"
-    />
-  );
-}
-
-function PerformerRedirect() {
-  const navigate = useNavigate();
-  React.useEffect(() => {
-    const code = createSession();
-    navigate(`/performer/${code}`, { replace: true });
-  }, [navigate]);
-  return (
-    <SEO
-      title="Performer Screen Demo | PickMySet"
-      description="Explore the PickMySet performer demo with live voting, setlists, lyrics, and backing tracks."
-      canonicalPath="/performer/demo"
-    />
   );
 }
